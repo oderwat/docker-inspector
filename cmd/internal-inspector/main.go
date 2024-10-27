@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/alexflint/go-arg"
@@ -32,8 +31,6 @@ type FileInfo struct {
 
 type Args struct {
 	Path    string `arg:"--path" default:"/" help:"path to inspect"`
-	JSON    bool   `arg:"--json" help:"output in JSON format"`
-	Summary bool   `arg:"--summary" help:"show summary statistics"`
 	Pattern string `arg:"--glob" help:"glob pattern for matching files (supports **/)"`
 	MD5     bool   `arg:"--md5" help:"calculate MD5 checksums for files"`
 	NoTimes bool   `arg:"--no-times" help:"exclude modification times from output"`
@@ -57,7 +54,6 @@ func calculateMD5(path string) (string, error) {
 func main() {
 	var args Args
 	// Set defaults
-	args.Summary = false
 	args.Path = "/"
 
 	arg.MustParse(&args)
@@ -68,18 +64,19 @@ func main() {
 
 	err := filepath.Walk(args.Path, func(path string, info fs.FileInfo, err error) error {
 		// Handle path errors gracefully
+		if strings.HasPrefix(path, "/proc") ||
+			strings.HasPrefix(path, "/sys") ||
+			strings.HasPrefix(path, "/dev") {
+			skippedCount++
+			//fmt.Fprintf(os.Stderr, "Skipping %s:\n", path)
+			return filepath.SkipDir
+		}
 		if err != nil {
-			// Skip special filesystem errors
-			if os.IsNotExist(err) ||
-				strings.HasPrefix(path, "/proc") ||
-				strings.HasPrefix(path, "/sys") ||
-				strings.HasPrefix(path, "/dev") {
-				skippedCount++
-				return filepath.SkipDir
-			}
-			// For other errors, log and continue
 			fmt.Fprintf(os.Stderr, "Warning: Cannot access %s: %v\n", path, err)
 			skippedCount++
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -125,15 +122,13 @@ func main() {
 		}
 
 		// Calculate MD5 if requested and file is not a directory
-		if args.MD5 && !info.IsDir() {
+		if args.MD5 && !info.IsDir() && info.Size() > 0 && symlinkTo == "" {
 			if md5sum, err := calculateMD5(path); err == nil {
 				fileInfo.MD5 = md5sum
 				md5Count++
 			} else {
 				md5ErrorCount++
-				if args.JSON {
-					fileInfo.MD5 = fmt.Sprintf("error: %v", err)
-				}
+				fileInfo.MD5 = fmt.Sprintf("error: %v", err)
 			}
 		}
 
@@ -152,66 +147,7 @@ func main() {
 		return files[i].Path < files[j].Path
 	})
 
-	// Output results
-	if args.JSON {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		encoder.Encode(files)
-	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-		header := "Mode\tSize\tModified\tUser\tGroup\tPath\tSymlink"
-		if args.MD5 {
-			header += "\tMD5"
-		}
-		fmt.Fprintln(w, header)
-
-		for _, file := range files {
-			symlink := ""
-			if file.SymlinkTo != "" {
-				symlink = "-> " + file.SymlinkTo
-			}
-			// Build the line string, conditionally including the time field.
-			// When NoTimes is true, timeStr will be empty and won't add a tab,
-			// otherwise it adds both the formatted time and a tab.
-			timeStr := ""
-			if !args.NoTimes {
-				timeStr = file.ModTime.Format("2006-01-02 15:04:05") + "\t"
-			}
-			line := fmt.Sprintf("%s\t%d\t%s%s\t%s\t%s\t%s",
-				file.Mode,
-				file.Size,
-				timeStr,
-				file.User,
-				file.Group,
-				file.Path,
-				symlink,
-			)
-			if args.MD5 {
-				line += fmt.Sprintf("\t%s", file.MD5)
-			}
-			fmt.Fprintln(w, line)
-		}
-		w.Flush()
-	}
-
-	// Print summary if requested
-	if args.Summary {
-		out := os.Stdout
-		if args.JSON {
-			out = os.Stderr
-		}
-		fmt.Fprintf(out, "\nSummary:\n")
-		fmt.Fprintf(out, "Total size: %d bytes\n", totalSize)
-		fmt.Fprintf(out, "Directories: %d\n", dirCount)
-		fmt.Fprintf(out, "Files: %d\n", fileCount)
-		if skippedCount > 0 {
-			fmt.Fprintf(out, "Skipped items: %d\n", skippedCount)
-		}
-		if args.MD5 {
-			fmt.Fprintf(out, "MD5 checksums calculated: %d\n", md5Count)
-			if md5ErrorCount > 0 {
-				fmt.Fprintf(out, "MD5 calculation errors: %d\n", md5ErrorCount)
-			}
-		}
-	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	encoder.Encode(files)
 }
