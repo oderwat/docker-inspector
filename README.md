@@ -1,16 +1,14 @@
 # Docker Image Inspector
 
-A command-line tool to inspect the contents of Docker images without having to manually create containers or extract tar files. The tool creates a temporary container, inspects its filesystem, and cleans up automatically.
-
-## Beware: Experimental (WIP)
-
-This is work in progress and not finished or bug free. In fact there are known problems and everything was only tested on osx so far.
+A command-line tool for inspecting, comparing, and extracting files from Docker images without having to manually create containers. The tool creates a temporary container, inspects its filesystem, and cleans up automatically. It can list files and their attributes, compare two images to find differences, and extract files from images to the local filesystem.
 
 ## Features
 
 - Cross-platform: Runs on macOS, Linux, and Windows (with Linux containers)
-- Inspects any Docker image without modifying it
-- Extracts files from images to local filesystem
+- Three main modes of operation:
+  - Inspect: List files and their attributes in any Docker image
+  - Compare: Show detailed differences between two Docker images
+  - Extract: Copy files from Docker images to local filesystem
 - Recursive directory listing
 - Glob pattern support (including `**/`) for finding specific files
 - MD5 checksum calculation for files
@@ -18,8 +16,13 @@ This is work in progress and not finished or bug free. In fact there are known p
 - Detailed summaries of files, directories, and sizes
 - Clean handling of special filesystems (/proc, /sys, etc.)
 - Modification time handling for reliable diffs
+- Preserves file permissions and ownership during extraction
 
-## Installation
+## Installation (precompiled binary)
+
+Download from [Release Page](https://github.com/oderwat/docker-inspector/releases/latest)
+
+## Installation (from source)
 
 1. Clone the repository
 2. Build for your platform:
@@ -199,6 +202,22 @@ The tool:
    - Copies files with requested attributes preserved
    - On macOS, uses sudo to fix ownership if requested
 6. Automatically cleans up the container (unless --keep is specified)
+
+## Known bugs
+
+Directories are not handled well so far:
+
+- Extraction (using `--output-dir`) is not creating empty directories
+- `--preserver-owner` is not working for directories either
+
+Cutting of path elements using `--strip-components` is sketchy in this implementation.
+
+## Caveats
+
+- `--glob` is applied to the full path, so you need `/etc/**` to get all files and directory from /etc and `/etc/*` to get just the files.
+- Preserving permissions on OSX needs a sketchy implementation that uses `sudo` with a temporary bash script.
+- OSX external APF drives are usually not preserving ownership (this is why you can share them between macs with different user ids)
+- This is not yet tested on Linux and Windows at all!
 
 ## Building from Source
 
