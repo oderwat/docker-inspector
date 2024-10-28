@@ -8,6 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"text/tabwriter"
 )
 
@@ -24,6 +28,12 @@ type Args struct {
 	MD5     bool   `arg:"--md5" help:"calculate MD5 checksums for files"`
 	Keep    bool   `arg:"--keep" help:"keep the temporary container after inspection"`
 	NoTimes bool   `arg:"--no-times" help:"exclude modification times from output"`
+	// for extraction
+	OutputDir           string `arg:"--output-dir" help:"extract matching files to this directory"`
+	StripComponents     int    `arg:"--strip-components" help:"strip NUMBER leading components from file names"`
+	PreserveOwner       bool   `arg:"--preserve-owner" help:"preserve user/group information when extracting"`
+	PreservePermissions bool   `arg:"--preserve-perms" help:"preserve file permissions when extracting"`
+	PreserveAll         bool   `arg:"--preserve-all" help:"preserve all file attributes"`
 }
 
 func (Args) Version() string {
@@ -90,6 +100,36 @@ func runInspector(image string, args Args) ([]byte, error) {
 		dockerArgs = append(dockerArgs, "--rm")
 	}
 
+	// If output directory is specified, mount it
+	if args.OutputDir != "" {
+		// Convert to absolute path
+		absPath, err := filepath.Abs(args.OutputDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path for output dir: %v", err)
+		}
+
+		// Create the output directory if it doesn't exist
+		if err := os.Mkdir(absPath, 0755); err != nil && !os.IsExist(err) {
+			return nil, fmt.Errorf("failed to create output directory: %v", err)
+		}
+
+		dockerArgs = append(dockerArgs,
+			"-v", fmt.Sprintf("%s:/inspect-target", absPath))
+	}
+
+	/*
+		// Add capabilities if we need to preserve ownership
+		if args.OutputDir != "" && args.PreserveOwner {
+			// Option 1: Full privileged mode (more than we need, but guaranteed to work)
+			//dockerArgs = append(dockerArgs, "--privileged")
+				// Option 2: Just the capabilities we need (more secure)
+				dockerArgs = append(dockerArgs,
+					"--cap-add=CHOWN",
+					"--cap-add=DAC_OVERRIDE",
+					"--cap-add=DAC_READ_SEARCH")
+		}
+	*/
+
 	// Mount the inspector and set it as entrypoint
 	dockerArgs = append(dockerArgs,
 		"-v", fmt.Sprintf("%s:/inspect:ro", inspectorPath),
@@ -109,13 +149,22 @@ func runInspector(image string, args Args) ([]byte, error) {
 	if args.Path != "/" {
 		dockerArgs = append(dockerArgs, "--path", args.Path)
 	}
-
+	if args.OutputDir != "" {
+		dockerArgs = append(dockerArgs, "--output-dir", "/inspect-target")
+		dockerArgs = append(dockerArgs, "--strip-components", fmt.Sprintf("%d", args.StripComponents))
+		if args.PreserveOwner {
+			dockerArgs = append(dockerArgs, "--preserve-owner")
+		}
+		if args.PreservePermissions {
+			dockerArgs = append(dockerArgs, "--preserve-perms")
+		}
+	}
 	// Create a pipe for capturing stdout while also displaying it
 	cmd := exec.Command("docker", dockerArgs...)
 	cmd.Stderr = os.Stderr
+	cmd.Stderr = os.Stderr
 	output, err := cmd.Output()
 	return output, err
-
 	/*
 		// This is a version that lets us debug what the docker command is printing
 		stdout, err := cmd.StdoutPipe()
@@ -160,6 +209,18 @@ func main() {
 	args.Path = "/"
 
 	arg.MustParse(&args)
+
+	if args.PreserveAll {
+		args.PreserveOwner = true
+		args.PreservePermissions = true
+	}
+	// check if we actually can handle the owner preservation
+	if runtime.GOOS == "darwin" && args.OutputDir != "" && args.PreserveOwner {
+		if !isOwnershipSupported(args.OutputDir) {
+			fmt.Fprintf(os.Stderr, "filesystem of %q does not support ownership changes\n", args.OutputDir)
+			os.Exit(1)
+		}
+	}
 
 	// Run inspection on first image
 	files1JSON, err := runInspector(args.Image1, args)
@@ -214,11 +275,11 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
+		var files1 []FileInfo
 		if args.JSON {
 			// we just print what we got
 			fmt.Print(string(files1JSON))
 		} else {
-			var files1 []FileInfo
 			if err := json.Unmarshal(files1JSON, &files1); err != nil {
 				fmt.Fprintf(os.Stderr, "failed to parse inspection results: %v", err)
 				os.Exit(1)
@@ -277,5 +338,157 @@ func main() {
 				fmt.Printf("Files: %d\n", fileCount)
 			}
 		}
+
+		// If we're on macOS and files were copied with ownership preservation requested,
+		// fix ownership using sudo
+		if runtime.GOOS == "darwin" && args.OutputDir != "" &&
+			args.PreserveOwner {
+			// Test if ownership changes are supported
+			if args.JSON {
+				if err := json.Unmarshal(files1JSON, &files1); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to parse inspection results: %v", err)
+					os.Exit(1)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "\nFixing file ownership on macOS...")
+			if err := fixOwnershipWithSudo(files1, args.OutputDir, args.StripComponents); err != nil {
+				fmt.Fprintf(os.Stderr, "\nError fixing ownership: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, " Done!\n")
+		}
 	}
+}
+
+// In main.go, modify the ownership fixing:
+func fixOwnershipWithSudo(files []FileInfo, outputDir string, stripComponents int) error {
+	// Build a script of chown commands
+	var commands strings.Builder
+	commands.WriteString("#!/bin/bash\n")
+
+	for _, file := range files {
+		// Get the adjusted path based on strip components
+		destPath := getDestPath(file.Path, stripComponents)
+		if destPath == "" {
+			continue
+		}
+
+		// Extract UID/GID from the user/group strings
+		uid, err := extractID(file.User)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not extract UID from %q: %v\n", file.User, err)
+			continue
+		}
+		gid, err := extractID(file.Group)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not extract GID from %q: %v\n", file.Group, err)
+			continue
+		}
+
+		fullDestPath := filepath.Join(outputDir, destPath)
+		// Use -h to handle symlinks correctly
+		fmt.Fprintf(&commands, "chown -h %d:%d %q\n", uid, gid, fullDestPath)
+	}
+
+	// Create a temporary script file
+	scriptFile, err := os.CreateTemp("", "docker-inspector-*.sh")
+	if err != nil {
+		return fmt.Errorf("failed to create script file: %v", err)
+	}
+	defer os.Remove(scriptFile.Name())
+
+	if err := os.WriteFile(scriptFile.Name(), []byte(commands.String()), 0700); err != nil {
+		return fmt.Errorf("failed to write script: %v", err)
+	}
+
+	//fmt.Println(commands.String())
+	// Run the script with sudo
+	cmd := exec.Command("sudo", "/bin/bash", scriptFile.Name())
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to fix ownership: %v", err)
+	}
+
+	return nil
+}
+
+func getDestPath(sourcePath string, stripComponents int) string {
+	// Split path into components
+	parts := strings.Split(strings.TrimPrefix(sourcePath, "/"), "/")
+
+	// Strip leading components
+	if stripComponents >= len(parts) {
+		return ""
+	}
+
+	return "/" + filepath.Join(parts[stripComponents:]...)
+}
+
+func extractID(s string) (int, error) {
+	// Find the last pair of parentheses
+	openIdx := strings.LastIndex(s, "(")
+	closeIdx := strings.LastIndex(s, ")")
+	if openIdx == -1 || closeIdx == -1 || openIdx >= closeIdx {
+		return 0, fmt.Errorf("no ID found in %q", s)
+	}
+
+	// Extract and parse the ID
+	idStr := s[openIdx+1 : closeIdx]
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid ID in %q: %v", s, err)
+	}
+	return id, nil
+}
+
+func isOwnershipSupported(dir string) bool {
+	// Convert to absolute path
+	absPath, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+
+	created := false
+	stat, err := os.Stat(absPath)
+	if err != nil {
+		// Create the output directory if it doesn't exist
+		if err := os.Mkdir(absPath, 0755); err != nil {
+			return false
+		}
+		created = true
+	}
+	defer func() {
+		if created {
+			if err := os.Remove(absPath); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to remove %q: %v", absPath, err)
+			}
+		}
+	}()
+
+	testFile, err := os.CreateTemp(dir, ".ownership-test-*")
+	if err != nil {
+		return false
+	}
+	testPath := testFile.Name()
+	testFile.Close()
+	defer os.Remove(testPath)
+
+	fmt.Fprintf(os.Stderr, "Checking filesystem of %q for ownership support (requires sudo)...\n", dir)
+	// Try to change ownership to root:root
+	if err := exec.Command("sudo", "chown", "999:999", testPath).Run(); err != nil {
+		return false
+	}
+
+	// Read back the ownership
+	stat, err = os.Stat(testPath)
+	if err != nil {
+		return false
+	}
+
+	if sys, ok := stat.Sys().(*syscall.Stat_t); ok {
+		return sys.Uid == 999 && sys.Gid == 999
+	}
+	return false
 }
