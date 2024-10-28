@@ -1,2 +1,4 @@
-docker-inspector-*
+/docker-inspector-darwin
+/docker-inspector-linux
+/docker-inspector.exe
 cmd/docker-inspector/internal-inspector
