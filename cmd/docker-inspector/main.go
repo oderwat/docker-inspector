@@ -40,7 +40,7 @@ func (Args) Version() string {
 }
 
 func (Args) Description() string {
-	return "Docker image content inspector - examines and compares files inside container images"
+	return "Docker image content inspector - examines, extracts and compares files inside container images"
 }
 
 func printDiffText(result *Result) {

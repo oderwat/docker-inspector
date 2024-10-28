@@ -2,6 +2,10 @@
 
 A command-line tool for inspecting, comparing, and extracting files from Docker images without having to manually create containers. The tool creates a temporary container, inspects its filesystem, and cleans up automatically. It can list files and their attributes, compare two images to find differences, and extract files from images to the local filesystem.
 
+## Disclaimer
+
+This is WIP and "use it on your own risk". There are known and unknown bugs!
+
 ## Features
 
 - Cross-platform: Runs on macOS, Linux, and Windows (with Linux containers)
@@ -20,21 +24,34 @@ A command-line tool for inspecting, comparing, and extracting files from Docker 
 
 ## Installation (precompiled binary)
 
-Download from [Release Page](https://github.com/oderwat/docker-inspector/releases/latest)
+Download an executable for your architecture from [Release Page](https://github.com/oderwat/docker-inspector/releases/latest)
+
+Extract the ZIP and copy it to you path.
 
 ## Installation (from source)
 
-1. Clone the repository
-2. Build for your platform:
+- Clone the repository
+- Build for your platform:
 ```bash
-# For macOS
+make
+```
+
+To follow the examples you need to copy the binary into your path or use it with the correct name of the executable (e.g. `./docker-inspector.exe`) 
+
+## Build for other platforms (cross compilation)
+
+```bash
+# For Mac
 make darwin
+#./docker-inspector-darwin
 
 # For Linux
 make linux
+#./docker-inspector-linux
 
-# For Windows
+# For Windows (cross compilation)
 make windows
+#./docker-inspector.exe
 ```
 
 ## Usage
@@ -42,58 +59,67 @@ make windows
 Basic usage:
 ```bash
 # Inspect a single image
-./docker-inspector nginx:latest
+docker-inspector nginx:latest
 
 # Compare two images
-./docker-inspector nginx:latest nginx:1.24
+docker-inspector nginx:latest nginx:1.24
 ```
 
 With options:
 ```bash
 # Find specific files
-./docker-inspector nginx:latest --glob "**/*.conf"
+docker-inspector nginx:latest --glob "**/*.conf"
 
 # Calculate MD5 checksums
-./docker-inspector nginx:latest --md5
+docker-inspector nginx:latest --md5
 
 # Output as JSON
-./docker-inspector nginx:latest --json > nginx-files.json
+docker-inspector nginx:latest --json > nginx-files.json
 
 # Inspect specific path
-./docker-inspector nginx:latest --path /etc/nginx
+docker-inspector nginx:latest --path /etc/nginx
 
 # Keep container for further inspection
-./docker-inspector nginx:latest --keep
+docker-inspector nginx:latest --keep
 
 # Extract files from image
-./docker-inspector nginx:latest --output-dir ./extracted --glob "**/*.conf"
+docker-inspector nginx:latest --output-dir ./extracted --glob "**/*.conf"
 
 # Extract with preserved permissions and ownership
-./docker-inspector nginx:latest --output-dir ./extracted --preserve-all
+docker-inspector nginx:latest --output-dir ./extracted --preserve-all
 
 # Extract stripping leading path components
-./docker-inspector nginx:latest --output-dir ./extracted --glob "/etc/nginx/**" --strip-components 2
+docker-inspector nginx:latest --output-dir ./extracted --glob "/etc/nginx/**" --strip-components 2
 ```
 
-### Image Comparison Mode
+### Comparing Images
 
-When two images are specified, the tool operates in comparison mode, showing the differences between them:
+The tool can directly compare two Docker images to show their differences:
 
 ```bash
-# Compare two different versions
-./docker-inspector nginx:latest nginx:1.24
+# Direct comparison of two images
+docker-inspector nginx:latest nginx:1.24
 
 # Compare with content verification
-./docker-inspector nginx:latest nginx:1.24 --md5
+docker-inspector nginx:latest nginx:1.24 --md5
 
 # Focus on specific files
-./docker-inspector nginx:latest nginx:1.24 --glob "**/*.conf"
+docker-inspector nginx:latest nginx:1.24 --glob "**/*.conf"
 
 # Compare without modification times
-./docker-inspector nginx:latest nginx:1.24 --no-times
+docker-inspector nginx:latest nginx:1.24 --no-times
 
-# Get machine-readable diff
-./docker-inspector nginx:latest nginx:1.24 --json
+# Get machine-readable comparison
+docker-inspector nginx:latest nginx:1.24 --json
+```
+
+Alternatively, you can generate and compare JSON outputs manually:
+```bash
+# Generate JSONs separately and use external diff tools
+docker-inspector nginx:latest --json --md5 > image1.json
+docker-inspector nginx:1.24 --json --md5 > image2.json
+diff image1.json image2.json
+# or use jq, etc.
 ```
 
 The comparison shows:
@@ -136,7 +162,6 @@ This is useful for:
 - Checking for unwanted modifications
 - Automation and CI/CD pipelines
 
-
 ### File Extraction Options
 
 The tool can extract files from Docker images to your local filesystem:
@@ -155,39 +180,36 @@ Note: When preserving ownership on macOS:
 - The tool will automatically use sudo to fix ownership after the copy
 - Some macOS volumes (like external drives) might not support ownership changes
 
-### Comparing Images
-
-To compare the contents of two images or two runs of the same image:
-
-```bash
-# With modification times (might show differences due to container startup)
-./docker-inspector nginx:latest --json --md5 > run1.txt
-./docker-inspector nginx:latest --json --md5 > run2.txt
-diff run1.txt run2.txt
-
-# Without modification times (more reliable for structural comparisons)
-./docker-inspector nginx:latest --json --md5 --no-times > run1.txt
-./docker-inspector nginx:latest --json --md5 --no-times > run2.txt
-diff run1.txt run2.txt
-```
-
-Note: Files like /etc/resolv.conf typically show modification time differences between runs due to container startup configuration. Using --md5 helps identify actual content changes regardless of timestamps.
-
 ### Options
 
+`docker-inspector --help`
+
 ```
---path               Path inside the container to inspect (default: "/")
---json              Output in JSON format
---summary           Show summary statistics
---glob              Glob pattern for matching files (supports **/)
---md5               Calculate MD5 checksums for files
---keep              Keep the temporary container after inspection
---no-times          Exclude modification times from output (useful for diffs)
---output-dir        Extract matching files to this directory
---strip-components  Strip NUMBER leading components from file names when extracting
---preserve-perms    Preserve file permissions when extracting
---preserve-owner    Preserve user/group ownership when extracting
---preserve-all      Preserve all file attributes
+Docker image content inspector - examines, extracts and compares files inside container images
+docker-inspector 1.1.0
+Usage: docker-inspector-darwin [--path PATH] [--json] [--summary] [--glob GLOB] [--md5] [--keep] [--no-times] [--output-dir OUTPUT-DIR] [--strip-components STRIP-COMPONENTS] [--preserve-owner] [--preserve-perms] [--preserve-all] IMAGE1 [IMAGE2]
+
+Positional arguments:
+  IMAGE1                 docker image to inspect (or first image when comparing)
+  IMAGE2                 second docker image (for comparison mode)
+
+Options:
+  --path PATH            path inside the container to inspect [default: /]
+  --json                 output in JSON format
+  --summary              show summary statistics
+  --glob GLOB            glob pattern for matching files (supports **/)
+  --md5                  calculate MD5 checksums for files
+  --keep                 keep the temporary container after inspection
+  --no-times             exclude modification times from output
+  --output-dir OUTPUT-DIR
+                         extract matching files to this directory
+  --strip-components STRIP-COMPONENTS
+                         strip NUMBER leading components from file names
+  --preserve-owner       preserve user/group information when extracting
+  --preserve-perms       preserve file permissions when extracting
+  --preserve-all         preserve all file attributes
+  --help, -h             display this help and exit
+  --version              display version and exit
 ```
 
 ## How It Works
@@ -217,7 +239,6 @@ Cutting of path elements using `--strip-components` is sketchy in this implement
 - `--glob` is applied to the full path, so you need `/etc/**` to get all files and directory from /etc and `/etc/*` to get just the files.
 - Preserving permissions on OSX needs a sketchy implementation that uses `sudo` with a temporary bash script.
 - OSX external APF drives are usually not preserving ownership (this is why you can share them between macs with different user ids)
-- This is not yet tested on Linux and Windows at all!
 
 ## Building from Source
 
@@ -238,7 +259,7 @@ make windows  # For Windows
 
 ## Credits
 
-Most of the implementation work was done by Claude (Anthropic) in a conversation about Docker image inspection requirements and cross-platform Go development. The original concept and requirements were provided by the repository owner.
+Most of the implementation work was done using Claude (Anthropic) in a conversation about Docker image inspection requirements and cross-platform Go development. The original concept and requirements were provided by the repository owner.
 
 ## License
 
